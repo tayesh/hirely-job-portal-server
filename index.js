@@ -41,6 +41,51 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
+        app.post('/update-user-details', async (req, res) => {
+            const { email, dataType, data } = req.body; // Extract email, dataType, and data from request body
+        
+            // Validate input
+            if (!email || !dataType || !data) {
+                return res.status(400).json({ message: 'Email, dataType, and data are required' });
+            }
+        
+            try {
+                // Find the user by email
+                const user = await userCollection.findOne({ email });
+        
+                if (!user) {
+                    return res.status(404).json({ message: 'User not found' });
+                }
+        
+                let updateQuery = {};
+        
+                if (dataType === 'WorkExp' || dataType === 'KeySkills') {
+                    // Handle WorkExp and KeySkills differently: Append to the existing array
+                    const existingData = user.UserDescription?.[dataType] || []; // Get existing data or initialize as empty array
+                    const updatedData = [...existingData, data]; // Append the new data
+        
+                    updateQuery[`UserDescription.${dataType}`] = updatedData; // Update the array
+                } else {
+                    // For other data types, overwrite the existing data
+                    updateQuery[`UserDescription.${dataType}`] = data;
+                }
+        
+                // Update the user document
+                const result = await userCollection.updateOne(
+                    { email }, // Filter by email
+                    { $set: updateQuery } // Update operation
+                );
+        
+                if (result.modifiedCount === 1) {
+                    res.status(200).json({ message: `User ${dataType} updated successfully` });
+                } else {
+                    res.status(500).json({ message: `Failed to update user ${dataType}` });
+                }
+            } catch (error) {
+                console.error(`Error updating user ${dataType}:`, error);
+                res.status(500).json({ message: 'Internal server error' });
+            }
+        });
         app.get('/users', async (req, res) => {
             try {
                 const result = await userCollection.find().toArray();
