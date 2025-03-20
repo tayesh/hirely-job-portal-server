@@ -42,6 +42,62 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
+        app.get('/job/:email', async (req, res) => {
+            try {
+                const email = req.params.email; // Get the email from the URL parameter
+
+                // Ensure the field name matches the one in your database (e.g., 'agencyEmail')
+                const result = await jobCollection.find({ email: email }).toArray(); // Use the correct field name
+
+                if (result.length > 0) {
+                    res.send(result); // Send the job listings if found
+                } else {
+                    res.status(404).send("No jobs found for the specified email"); // Send a 404 if no jobs are found
+                }
+            } catch (error) {
+                console.error("Error fetching jobs by email:", error);
+                res.status(500).send("Internal Server Error");
+            }
+        });
+        app.put('/job/:id', async (req, res) => {
+            try {
+                const jobId = req.params.id;
+                const updatedJob = req.body;
+
+                // Update the job in the database
+                const result = await jobCollection.updateOne(
+                    { _id: new ObjectId(jobId) }, // Filter by job ID
+                    { $set: updatedJob } // Update with the new job details (excluding _id)
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).send("Job not found");
+                }
+
+                res.send({ message: "Job updated successfully", updatedJob });
+            } catch (error) {
+                console.error("Error updating job:", error);
+                res.status(500).send("Internal Server Error");
+            }
+        });
+
+        app.delete('/job/:id', async (req, res) => {
+            try {
+                const jobId = req.params.id;
+
+                // Delete the job from the database
+                const result = await jobCollection.deleteOne({ _id: new ObjectId(jobId) });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).send("Job not found");
+                }
+
+                res.send({ message: "Job deleted successfully" });
+            } catch (error) {
+                console.error("Error deleting job:", error);
+                res.status(500).send("Internal Server Error");
+            }
+        });
         app.get('/users', async (req, res) => {
             try {
                 const result = await userCollection.find().toArray();
@@ -330,9 +386,55 @@ async function run() {
         app.post('/jobs', async (req, res) => {
             try {
                 const savedItem = req.body;
-                const result = await jobCollection.insertOne(savedItem);
-                res.send(result);
+
+                // Step 1: Insert the job into the jobCollection
+                const jobResult = await jobCollection.insertOne(savedItem);
+                const jobId = jobResult.insertedId; // Get the inserted job ID
+
+                // Step 2: Find the company by its name
+                const company = await companyCollection.findOne({ Company_Name: savedItem.company });
+
+                let notificationMessage = '';
+
+                if (!company) {
+                    // If the company is not found, set a message
+                    notificationMessage = 'Company is not found, so notifications will not be sent to any candidates.';
+                } else {
+                    // Step 3: Get the list of followers
+                    const followers = company.followers || [];
+
+                    // Step 4: Add a notification to each follower's user document
+                    for (const followerEmail of followers) {
+                        const user = await userCollection.findOne({ email: followerEmail });
+
+                        if (user) {
+                            // Create a notification object
+                            const notification = {
+                                companyName: company.Company_Name,
+                                jobId: jobId,
+                                timestamp: new Date(),
+                                notificationread:false
+                            };
+
+                            // Add the notification to the user's notification array
+                            await userCollection.updateOne(
+                                { email: followerEmail },
+                                { $push: { notifications: notification } }
+                            );
+                        }
+                    }
+
+                    notificationMessage = 'Notifications sent to followers successfully.';
+                }
+
+                // Respond with both messages
+                res.send({
+                    message: 'Job posted successfully',
+                    jobId,
+                    notificationMessage,
+                });
             } catch (error) {
+                console.error('Error posting job:', error);
                 res.status(500).send({ message: 'Internal Server Error' });
             }
         });
@@ -376,22 +478,7 @@ async function run() {
             }
         });
 
-        app.delete('/jobs/:id', async (req, res) => {
-            try {
-                const { id } = req.params;
-                const { email } = req.query;
-                const query = { _id: id, agencyEmail: email };
-                const result = await jobCollection.deleteOne(query);
-                if (result.deletedCount > 0) {
-                    res.send({ message: "Job deleted successfully" });
-                } else {
-                    res.status(404).send({ message: "Job not found or you're not authorized to delete it" });
-                }
-            } catch (error) {
-                res.status(500).send({ message: 'Internal Server Error' });
-                console.error(error);
-            }
-        });
+
 
 
         app.patch("/applied/:id", async (req, res) => {
@@ -689,6 +776,8 @@ async function run() {
                             phoneNumber: user.phoneNumber,
                             userRoll: user.userRoll,
                             OTPverified: true,
+                            UserDescription:user.UserDescription,
+                            notifications:user.notifications
                         },
                     });
                 } else {
