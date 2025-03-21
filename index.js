@@ -31,6 +31,7 @@ async function run() {
         const coursecategoryCollection = client.db('hirely-job-portal').collection('course-category');
         const appliedCollection = client.db('hirely-job-portal').collection('applied');
         const savedCollection = client.db('hirely-job-portal').collection('saved');
+        const chatCollection = client.db('hirely-job-portal').collection('chat');
 
         // Get all jobs
         app.get('/jobs', async (req, res) => {
@@ -104,6 +105,24 @@ async function run() {
                 res.send(result);
             } catch (error) {
                 console.error("Error fetching jobs:", error);
+                res.status(500).send("Internal Server Error");
+            }
+        });
+        app.get('/users/:id', async (req, res) => {
+            try {
+                const userId = req.params.id; // Get the user ID from the request parameters
+                const user = await userCollection.findOne({ _id: new ObjectId(userId) }); // Find the user by ID
+
+                if (!user) {
+                    return res.status(404).send("User not found");
+                }
+
+                // Remove the password field from the user object
+                const { password, ...userWithoutPassword } = user;
+
+                res.send(userWithoutPassword); // Send the user data without the password
+            } catch (error) {
+                console.error("Error fetching user:", error);
                 res.status(500).send("Internal Server Error");
             }
         });
@@ -427,7 +446,7 @@ async function run() {
                                 companyName: company.Company_Name,
                                 jobId: jobId,
                                 timestamp: new Date(),
-                                notificationread:false
+                                notificationread: false
                             };
 
                             // Add the notification to the user's notification array
@@ -509,7 +528,7 @@ async function run() {
                 res.status(400).json({ message: "Update failed" });
             }
         });
-        
+
 
 
         // Get a single job by ID
@@ -786,13 +805,14 @@ async function run() {
                     return res.status(200).json({
                         message: 'Login successful!',
                         user: {
+                            _id: user._id,
                             name: user.name,
                             email: user.email,
                             phoneNumber: user.phoneNumber,
                             userRoll: user.userRoll,
                             OTPverified: true,
-                            UserDescription:user.UserDescription,
-                            notifications:user.notifications
+                            UserDescription: user.UserDescription,
+                            notifications: user.notifications
                         },
                     });
                 } else {
@@ -821,6 +841,150 @@ async function run() {
             } catch (error) {
                 console.error('Error during login:', error);
                 res.status(500).json({ message: 'An error occurred during login.' });
+            }
+        });
+
+
+        const { ObjectId } = require('mongodb'); // Ensure you import ObjectId
+
+        app.post('/notifications/mark-as-read', async (req, res) => {
+            const { userId, jobId } = req.body;
+
+            if (!userId || !jobId) {
+                return res.status(400).json({ message: 'userId and jobId are required' });
+            }
+
+            try {
+                // Find the user by userId
+                const user = await userCollection.findOne({ _id: new ObjectId(userId) });
+
+                if (!user) {
+                    return res.status(404).json({ message: 'User not found' });
+                }
+
+                // Convert jobId to ObjectId for comparison
+                const jobIdObjectId = new ObjectId(jobId);
+
+                // Find the notification with the matching jobId
+                const notificationIndex = user.notifications.findIndex(
+                    (notif) => new ObjectId(notif.jobId).equals(jobIdObjectId) // Compare ObjectIds
+                );
+
+                if (notificationIndex === -1) {
+                    return res.status(404).json({ message: 'Notification not found' });
+                }
+
+                // Update the notificationread field to true
+                user.notifications[notificationIndex].notificationread = true;
+
+                // Update the user document in the database
+                await userCollection.updateOne(
+                    { _id: new ObjectId(userId) },
+                    { $set: { notifications: user.notifications } }
+                );
+
+                res.status(200).json({ message: 'Notification marked as read' });
+            } catch (error) {
+                console.error('Error marking notification as read:', error);
+                res.status(500).json({ message: 'Internal server error' });
+            }
+        });
+        app.post('/messages', async (req, res) => {
+            const { email, messageText, userRoll } = req.body;
+
+            if (!email || !messageText || !userRoll) {
+                return res.status(400).json({ error: 'Missing required fields: email, messageText, or userRoll' });
+            }
+
+            try {
+                const newMessage = {
+                    messageID: new ObjectId(), // Generate a unique ID for the message
+                    messageText,
+                    sentBy: userRoll, // Indicates who sent the message (admin or user)
+                    timestamp: new Date(), // Add a timestamp for when the message was sent
+                };
+
+                // If the sender is an admin, find the recipient's (user's) conversation
+                if (userRoll === 'admin') {
+                    // Find the recipient's conversation (non-admin user)
+                    const recipientConversation = await chatCollection.findOne({ email });
+
+                    if (recipientConversation) {
+                        // If the recipient's conversation exists, push the new message to their messages array
+                        const result = await chatCollection.updateOne(
+                            { email },
+                            { $push: { messages: newMessage } }
+                        );
+
+                        return res.status(201).json({ message: 'Message stored successfully', data: result });
+                    } else {
+                        // If no conversation exists for the recipient, return an error
+                        return res.status(404).json({ error: 'Recipient conversation not found' });
+                    }
+                }
+
+                // If the sender is not an admin (e.g., a regular user), proceed as before
+                const existingDoc = await chatCollection.findOne({ email });
+
+                if (existingDoc) {
+                    // If the document exists, push the new message to the messages array
+                    const result = await chatCollection.updateOne(
+                        { email },
+                        { $push: { messages: newMessage } }
+                    );
+
+                    return res.status(201).json({ message: 'Message stored successfully', data: result });
+                } else {
+                    // If the document does not exist, create it with the messages array
+                    const result = await chatCollection.insertOne({
+                        email,
+                        messages: [newMessage],
+                    });
+
+                    return res.status(201).json({ message: 'Message stored successfully', data: result });
+                }
+            } catch (error) {
+                console.error('Error storing message:', error.message);
+                console.error('Stack Trace:', error.stack);
+                res.status(500).json({ error: 'Failed to store message', details: error.message });
+            }
+        });
+        app.get('/messages', async (req, res) => {
+            try {
+
+
+                // Retrieve all documents from the chat collection
+                const messages = await chatCollection.find({}).toArray();
+
+                res.status(200).json(messages);
+            } catch (error) {
+                console.error('Error retrieving messages:', error.message);
+                console.error('Stack Trace:', error.stack);
+                res.status(500).json({ error: 'Failed to retrieve messages', details: error.message });
+            }
+        });
+        app.get('/messages/:email', async (req, res) => {
+            const { email } = req.params;
+
+            if (!email) {
+                return res.status(400).json({ error: 'Email is required' });
+            }
+
+            try {
+
+
+                // Retrieve the document for the specified email
+                const userMessages = await chatCollection.findOne({ email });
+
+                if (!userMessages) {
+                    return res.status(404).json({ message: 'No messages found for this email' });
+                }
+
+                res.status(200).json(userMessages.messages);
+            } catch (error) {
+                console.error('Error retrieving messages:', error.message);
+                console.error('Stack Trace:', error.stack);
+                res.status(500).json({ error: 'Failed to retrieve messages', details: error.message });
             }
         });
 
