@@ -10,6 +10,7 @@ const axios = require('axios');
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded());
 
 const uri = "mongodb+srv://hirely-job-portal:HKMWexa1yBb2yzXZ@cluster0.ej6qyrh.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 
@@ -33,11 +34,10 @@ async function run() {
         const coursecategoryCollection = client.db('hirely-job-portal').collection('course-category');
         const appliedCollection = client.db('hirely-job-portal').collection('applied');
         const savedCollection = client.db('hirely-job-portal').collection('saved');
-
-
         const cvCollection = client.db('hirely-job-portal').collection('cv');
         const chatCollection = client.db('hirely-job-portal').collection('chat');
-        const paymentCollection = client.db('Book-vibe').collection('payments');
+        const paymentCollection = client.db('hirely-job-portal').collection('payments');
+        const takenCollection = client.db('hirely-job-portal').collection('taken');
 
         const multer = require('multer');
 
@@ -140,45 +140,60 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
+       
+
         app.put('/job/:id', async (req, res) => {
             try {
                 const jobId = req.params.id;
                 const updatedJob = req.body;
-
+        
+                // Validate job ID
+                if (!ObjectId.isValid(jobId)) {
+                    return res.status(400).send("Invalid job ID");
+                }
+        
                 // Update the job in the database
                 const result = await jobCollection.updateOne(
                     { _id: new ObjectId(jobId) }, // Filter by job ID
-                    { $set: updatedJob } // Update with the new job details (excluding _id)
+                    { $set: updatedJob } // Update with the new job details
                 );
-
+        
                 if (result.matchedCount === 0) {
                     return res.status(404).send("Job not found");
                 }
-
+        
                 res.send({ message: "Job updated successfully", updatedJob });
             } catch (error) {
                 console.error("Error updating job:", error);
                 res.status(500).send("Internal Server Error");
             }
         });
-
+        
+        // Delete a job by ID
         app.delete('/job/:id', async (req, res) => {
             try {
                 const jobId = req.params.id;
-
+        
+                // Validate job ID
+                if (!ObjectId.isValid(jobId)) {
+                    return res.status(400).send("Invalid job ID");
+                }
+        
                 // Delete the job from the database
                 const result = await jobCollection.deleteOne({ _id: new ObjectId(jobId) });
-
+        
                 if (result.deletedCount === 0) {
                     return res.status(404).send("Job not found");
                 }
-
+        
                 res.send({ message: "Job deleted successfully" });
             } catch (error) {
                 console.error("Error deleting job:", error);
                 res.status(500).send("Internal Server Error");
             }
         });
+
+
         app.get('/users', async (req, res) => {
             try {
                 const result = await userCollection.find().toArray();
@@ -463,8 +478,6 @@ async function run() {
             }
         });
 
-
-
         app.get('/companies', async (req, res) => {
             try {
                 const result = await companyCollection.find().toArray();
@@ -569,17 +582,13 @@ async function run() {
         app.get('/saved', async (req, res) => {
             try {
                 const { email, applyId } = req.query;
-
                 const query = { email };
-
                 // Check if applyId is provided
                 if (applyId) {
                     query.applyId = applyId;
                 }
-
                 // Query the saved jobs
                 const result = await savedCollection.find(query).toArray();  // Ensure you're using toArray if expecting an array
-
                 // Return saved jobs if found, otherwise send a 404 response
                 if (result.length > 0) {
                     res.send(result);
@@ -681,7 +690,6 @@ async function run() {
         });
         app.get("/courses/:id", async (req, res) => {
             const id = req.params.id;
-
             // console.log('cookies : ',req.cookies);
             const query = { _id: new ObjectId(id) };
             const course = await courseCollection.findOne(query);
@@ -925,7 +933,7 @@ async function run() {
         });
 
 
- // Ensure you import ObjectId
+        // Ensure you import ObjectId
 
         app.post('/notifications/mark-as-read', async (req, res) => {
             const { userId, jobId } = req.body;
@@ -1031,8 +1039,6 @@ async function run() {
         });
         app.get('/messages', async (req, res) => {
             try {
-
-
                 // Retrieve all documents from the chat collection
                 const messages = await chatCollection.find({}).toArray();
 
@@ -1051,8 +1057,6 @@ async function run() {
             }
 
             try {
-
-
                 // Retrieve the document for the specified email
                 const userMessages = await chatCollection.findOne({ email });
 
@@ -1068,161 +1072,228 @@ async function run() {
             }
         });
 
-
-        app.get('/payments', async (req, res) => {
-            const result = await paymentCollection.find().toArray();
-            res.send(result);
-        });
-
+        //Payments
         app.post('/create-payment', async (req, res) => {
             const paymentInfo = req.body;
-            const trx_id = new ObjectId().toString();
+
+            const trxId = new ObjectId().toString();
 
             const initiateData = {
-                store_id: "bookv6776cc873217c",
-                store_passwd: "bookv6776cc873217c@ssl",
+                store_id: "hirel67dd8bcf0efd7",
+                store_passwd: "hirel67dd8bcf0efd7@ssl",
                 total_amount: paymentInfo.amount,
                 currency: "BDT",
-                tran_id: trx_id,
+                tran_id: trxId,
                 success_url: "http://localhost:5000/success-payment",
                 fail_url: "http://localhost:5000/fail",
                 cancel_url: "http://localhost:5000/cancel",
-                cus_name: paymentInfo.customerName,
-                cus_email: paymentInfo.customerEmail,
+                cus_name: paymentInfo.name,
+                cus_email: paymentInfo.email,
                 cus_add1: "Dhaka",
+                cus_add2: "Dhaka",
                 cus_city: "Dhaka",
+                cus_state: "Dhaka",
+                cus_postcode: "1000",
                 cus_country: "Bangladesh",
-                cus_phone: "01711111111",
+                cus_phone: paymentInfo.phoneNumber,
                 cus_fax: "01711111111",
                 shipping_method: "NO",
-                product_name: "Books",
-                product_category: "General",
+                product_name: paymentInfo.course,
+                product_category: paymentInfo.category,
                 product_profile: "general",
-                multi_card_name: "mastercard, visacard, amexcard",
+                multi_card_name: ["mastercard", "visacard", "amexcard"],
                 value_a: "ref001_A",
                 value_b: "ref002_B",
                 value_c: "ref003_C",
-                value_d: "ref004_D",
+                value_d: "ref004_D"
             };
+            const response = await axios({
+                method: "POST",
+                url: "https://sandbox.sslcommerz.com/gwprocess/v4/api.php",
+                data: initiateData,
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+            })
 
-            try {
-                const sslResponse = await fetch("https://sandbox.sslcommerz.com/gwprocess/v4/api.php", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    body: new URLSearchParams(initiateData).toString(),
-                });
-
-                if (!sslResponse.ok) {
-                    throw new Error(`SSLCommerz API error: ${sslResponse.statusText}`);
-                }
-
-                const sslData = await sslResponse.json();
-
-                const saveData = {
-                    customerName: initiateData.cus_name,
-                    customerEmail: initiateData.cus_email,
-                    paymentId: trx_id,
-                    amount: paymentInfo.amount,
-                    status: "Pending",
-                };
-
-                await paymentCollection.insertOne(saveData);
-
-                if (sslData.GatewayPageURL) {
-                    res.send({
-                        paymentUrl: sslData.GatewayPageURL,
-                    });
-                } else {
-                    throw new Error("No GatewayPageURL received from SSLCommerz");
-                }
-            } catch (error) {
-                console.error("Error in /create-payment:", error);
-                res.status(500).send({ error: "Failed to initiate payment" });
+            const saveData = {
+                cus_name: paymentInfo.name,
+                cus_email: paymentInfo.email,
+                cus_phone: paymentInfo.phoneNumber,
+                paymentId: initiateData.tran_id,
+                product_name: paymentInfo.course,
+                product_category: paymentInfo.category,
+                paymentId: initiateData.tran_id,
+                amount: paymentInfo.amount,
+                status: "Pending"
             }
-        });
 
-        app.post("/success-payment", async (req, res) => {
+            const save = await paymentCollection.insertOne(saveData);
+
+            if (save) {
+                res.send({
+                    paymentUrl: response.data.GatewayPageURL
+                })
+            }
+
+        })
+
+        app.post('/success-payment', async (req, res) => {
             const successData = req.body;
-        
-            // Log the entire successData for debugging
-            console.log("Success Data from SSLCommerz:", successData);
-        
-            // Check if the status is VALID
-            if (successData.status !== 'VALID') {
-                console.error("Invalid payment status:", successData.status);
-                return res.status(400).json({ error: "Unauthorized Payment, Invalid Payment Status" });
+            console.log("Success Data", successData);
+
+            if (successData.status !== "VALID") {
+                throw new Error("UnAuthorized Payment, InValid Payment");
             }
-        
-            try {
-                const query = {
-                    paymentId: successData.tran_id,
-                };
-        
-                const update = {
-                    $set: {
-                        status: "Success",
-                    },
-                };
-        
-                // Update the payment status in the database
-                const updateResult = await paymentCollection.updateOne(query, update);
-        
-                if (updateResult.modifiedCount === 0) {
-                    console.error("No payment record found for transaction ID:", successData.tran_id);
-                    return res.status(404).json({ error: "Payment record not found" });
+
+            const query = {
+                paymentId: successData.tran_id
+            };
+
+            const update = {
+                $set: {
+                    status: "Success",
+                },
+            };
+
+            const updatedData = await paymentCollection.updateOne(query, update);
+
+            if (updatedData.modifiedCount === 1) {
+                const paymentDetails = await paymentCollection.findOne(query);
+
+                if (paymentDetails) {
+                    const { cus_email, product_name, product_category, amount, paymentId } = paymentDetails;
+                    const course = await courseCollection.findOne({ title: product_name });
+
+                    if (course) {
+                        const takenCourseData = {
+                            courseTitle: product_name,
+                            category: product_category,
+                            type: course.type,
+                            certification: course.certification,
+                            price: amount,
+                            paymentId: paymentId,
+                            userEmail: cus_email,
+                            takenAt: new Date()
+                        };
+
+                        const result = await takenCollection.insertOne(takenCourseData);
+
+                        if (result.insertedId) {
+                            console.log("Course successfully added to the taken collection.");
+                        } else {
+                            console.error("Failed to add course to the taken collection.");
+                        }
+                    } else {
+                        console.error("Course not found in the course collection.");
+                    }
+                } else {
+                    console.error("Payment details not found.");
                 }
-        
-                // Redirect to the frontend success page
-                res.redirect("http://localhost:5173/success");
+            } else {
+                console.error("Failed to update payment status.");
+            }
+
+            res.redirect("http://localhost:5173/success");
+        });
+
+
+        app.post('/fail', async (req, res) => {
+            res.redirect("http://localhost:5173/fail")
+        })
+        app.post('/cancel', async (req, res) => {
+            res.redirect("http://localhost:5173/cancel")
+        })
+
+        app.get('/taken', async (req, res) => {
+            try {
+                const result = await takenCollection.find().toArray();
+                res.send(result);
             } catch (error) {
-                console.error("Error in /success-payment:", error);
-                res.status(500).json({ error: "Internal Server Error" });
+                console.error("Error fetching jobs:", error);
+                res.status(500).send("Internal Server Error");
             }
         });
 
-        app.post("/fail", async (req, res) => {
-            const failData = req.body;
-            console.log("Payment Failed. Data from SSLCommerz:", failData);
+        app.get('/payments', async (req, res) => {
+            try {
+                // Retrieve all documents from the chat collection
+                const messages = await paymentCollection.find({}).toArray();
+
+                res.status(200).json(messages);
+            } catch (error) {
+                console.error('Error retrieving messages:', error.message);
+                console.error('Stack Trace:', error.stack);
+                res.status(500).json({ error: 'Failed to retrieve messages', details: error.message });
+            }
+        });
+
+        app.put('/companies/:id', async (req, res) => {
+            try {
+                const companyId = req.params.id;
+                const updatedCompany = req.body;
         
-            // Update the payment status in the database to "Failed"
-            const query = {
-                paymentId: failData.tran_id,
-            };
+                // Validate the company ID
+                if (!ObjectId.isValid(companyId)) {
+                    return res.status(400).send("Invalid company ID");
+                }
         
-            const update = {
-                $set: {
-                    status: "Failed",
-                },
-            };
+                // Update the company in the database
+                const result = await companyCollection.updateOne(
+                    { _id: new ObjectId(companyId) },
+                    { $set: updatedCompany }
+                );
         
-            await paymentCollection.updateOne(query, update);
+                // Check if the company was found and updated
+                if (result.matchedCount === 0) {
+                    return res.status(404).send("Company not found");
+                }
         
-            // Redirect to the frontend fail page
-            res.redirect("http://localhost:5173/fail");
+                // Send success response
+                res.send({ message: "Company updated successfully", updatedCompany });
+            } catch (error) {
+                console.error("Error updating company:", error);
+                res.status(500).send("Internal Server Error");
+            }
         });
         
-        app.post("/cancel", async (req, res) => {
-            const cancelData = req.body;
-            console.log("Payment Cancelled. Data from SSLCommerz:", cancelData);
+        // DELETE /companies/:id - Delete a company
+        app.delete('/companies/:id', async (req, res) => {
+            try {
+                const companyId = req.params.id;
         
-            // Update the payment status in the database to "Cancelled"
-            const query = {
-                paymentId: cancelData.tran_id,
-            };
+                // Validate the company ID
+                if (!ObjectId.isValid(companyId)) {
+                    return res.status(400).send("Invalid company ID");
+                }
         
-            const update = {
-                $set: {
-                    status: "Cancelled",
-                },
-            };
+                // Delete the company from the database
+                const result = await companyCollection.deleteOne({ _id: new ObjectId(companyId) });
         
-            await paymentCollection.updateOne(query, update);
+                // Check if the company was found and deleted
+                if (result.deletedCount === 0) {
+                    return res.status(404).send("Company not found");
+                }
         
-            // Redirect to the frontend cancel page
-            res.redirect("http://localhost:5173/cancel");
+                // Send success response
+                res.send({ message: "Company deleted successfully" });
+            } catch (error) {
+                console.error("Error deleting company:", error);
+                res.status(500).send("Internal Server Error");
+            }
         });
+
+        app.post('/companies', async (req, res) => {
+            try {
+                const savedItem = req.body;
+                const result = await companyCollection.insertOne(savedItem);
+                res.status(201).send(result);
+            } catch (error) {
+                console.error('Error adding company:', error);
+                res.status(500).send({ message: 'Internal Server Error' });
+            }
+        });
+
 
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } catch (error) {
