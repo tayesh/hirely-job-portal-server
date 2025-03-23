@@ -222,6 +222,33 @@ async function run() {
             }
         });
 
+        app.post('/upload-profile-image', async (req, res) => {
+            const { imageUrl, email } = req.body;
+
+            if (!imageUrl || !email) {
+                return res.status(400).json({ message: 'imageUrl and email are required' });
+            }
+
+            try {
+
+
+                // Find the user by email and update the image field
+                const result = await userCollection.updateOne(
+                    { email: email }, // Filter by email
+                    { $set: { image: imageUrl } } // Update the image field
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ message: 'User not found' });
+                }
+
+                res.status(200).json({ message: 'Profile image updated successfully' });
+            } catch (error) {
+                console.error('Error updating profile image:', error);
+                res.status(500).json({ message: 'Internal Server Error' });
+            }
+        });
+
 
 
         app.post('/followcompany', async (req, res) => {
@@ -562,6 +589,86 @@ async function run() {
             } catch (error) {
                 console.error('Error posting job:', error);
                 res.status(500).send({ message: 'Internal Server Error' });
+            }
+        });
+        app.post('/applied', async (req, res) => {
+            const { applyId, email, userEmail, name, jobTitle, company, salary, deadline, status } = req.body;
+
+            if (!applyId || !email || !userEmail || !name || !jobTitle || !company || !salary || !deadline || !status) {
+                return res.status(400).json({ message: 'All fields are required' });
+            }
+
+            try {
+
+
+                // Check if the candidate has already applied for this job
+                const existingApplication = await appliedCollection.findOne({
+                    applyId: applyId,
+                    userEmail: userEmail,
+                });
+
+                if (existingApplication) {
+                    return res.status(400).json({ message: 'You have already applied for this job' });
+                }
+
+                // Insert the applied job data into the applied collection
+                const appliedItem = {
+                    applyId,
+                    email,
+                    userEmail,
+                    name,
+                    jobTitle,
+                    company,
+                    salary,
+                    deadline,
+                    status,
+                    applyTime: new Date(),
+                };
+
+                const appliedResult = await appliedCollection.insertOne(appliedItem);
+
+                // Find the user (agency) with the email
+                const agency = await usersCollection.findOne({ email });
+
+                if (!agency) {
+                    return res.status(404).json({ message: 'Agency not found' });
+                }
+
+                // Check if the user role is not ADMIN
+                if (agency.userRole !== 'ADMIN') {
+                    // Find the candidate with userEmail
+                    const candidate = await usersCollection.findOne({ email: userEmail });
+
+                    if (!candidate) {
+                        return res.status(404).json({ message: 'Candidate not found' });
+                    }
+
+                    // Create a notification object
+                    const notification = {
+                        _id: new ObjectId(), // Generate a unique ID for the notification
+                        jobTitle,
+                        jobId: applyId,
+                        CandidateName: candidate.name,
+                        CandidateId: candidate._id,
+                        applyTime: new Date(),
+                        notificationRead: false,
+                    };
+
+                    // Update the agency's notifications array
+                    const updateResult = await usersCollection.updateOne(
+                        { email: agency.email },
+                        { $push: { notifications: notification } }
+                    );
+
+                    if (updateResult.modifiedCount === 0) {
+                        return res.status(500).json({ message: 'Failed to update notifications' });
+                    }
+                }
+
+                res.status(201).json({ message: 'Job application submitted successfully', appliedId: appliedResult.insertedId });
+            } catch (error) {
+                console.error('Error submitting job application:', error);
+                res.status(500).json({ message: 'Internal Server Error' });
             }
         });
 
@@ -962,8 +1069,8 @@ async function run() {
                     return res.status(404).json({ message: 'Notification not found' });
                 }
 
-                // Update the notificationread field to true
-                user.notifications[notificationIndex].notificationread = true;
+                // Update the notificationRead field to true
+                user.notifications[notificationIndex].notificationRead = true; // Use notificationRead for agencies
 
                 // Update the user document in the database
                 await userCollection.updateOne(
@@ -978,7 +1085,7 @@ async function run() {
             }
         });
         app.post('/messages', async (req, res) => {
-            const { email, messageText, userRoll } = req.body;
+            const { name, email, messageText, userRoll } = req.body;
 
             if (!email || !messageText || !userRoll) {
                 return res.status(400).json({ error: 'Missing required fields: email, messageText, or userRoll' });
@@ -1015,17 +1122,23 @@ async function run() {
                 const existingDoc = await chatCollection.findOne({ email });
 
                 if (existingDoc) {
-                    // If the document exists, push the new message to the messages array
+                    // If the document exists, update the name field (if it doesn't exist) and push the new message
+                    const updateQuery = {
+                        $set: { name: name }, // Update the name field if it doesn't exist
+                        $push: { messages: newMessage }, // Push the new message
+                    };
+
                     const result = await chatCollection.updateOne(
                         { email },
-                        { $push: { messages: newMessage } }
+                        updateQuery
                     );
 
                     return res.status(201).json({ message: 'Message stored successfully', data: result });
                 } else {
-                    // If the document does not exist, create it with the messages array
+                    // If the document does not exist, create it with the messages array and name field
                     const result = await chatCollection.insertOne({
                         email,
+                        name, // Include the name field for non-admin users
                         messages: [newMessage],
                     });
 
@@ -1198,6 +1311,8 @@ async function run() {
         });
 
 
+
+
         app.post('/fail', async (req, res) => {
             res.redirect("http://localhost:5173/fail")
         })
@@ -1221,12 +1336,14 @@ async function run() {
                 const messages = await paymentCollection.find({}).toArray();
 
                 res.status(200).json(messages);
+
             } catch (error) {
                 console.error('Error retrieving messages:', error.message);
                 console.error('Stack Trace:', error.stack);
                 res.status(500).json({ error: 'Failed to retrieve messages', details: error.message });
             }
         });
+
 
         app.put('/companies/:id', async (req, res) => {
             try {
@@ -1281,6 +1398,7 @@ async function run() {
                 console.error("Error deleting company:", error);
                 res.status(500).send("Internal Server Error");
             }
+
         });
 
         app.post('/companies', async (req, res) => {
