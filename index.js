@@ -123,6 +123,23 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
+
+        // Get all jobs with sponsored jobs prioritized
+        app.get('/jobs', async (req, res) => {
+            try {
+                const jobs = await jobCollection.find().toArray();
+                // Sort jobs: sponsored jobs come first
+                const sortedJobs = jobs.sort((a, b) => {
+                    if (a.sponsored === b.sponsored) return 0;
+                    return a.sponsored ? -1 : 1;
+                });
+                res.send(sortedJobs);
+            } catch (error) {
+                console.error("Error fetching jobs:", error);
+                res.status(500).send("Internal Server Error");
+            }
+        });
+
         app.get('/job/:email', async (req, res) => {
             try {
                 const email = req.params.email; // Get the email from the URL parameter
@@ -140,52 +157,52 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
-       
+
 
         app.put('/job/:id', async (req, res) => {
             try {
                 const jobId = req.params.id;
                 const updatedJob = req.body;
-        
+
                 // Validate job ID
                 if (!ObjectId.isValid(jobId)) {
                     return res.status(400).send("Invalid job ID");
                 }
-        
+
                 // Update the job in the database
                 const result = await jobCollection.updateOne(
                     { _id: new ObjectId(jobId) }, // Filter by job ID
                     { $set: updatedJob } // Update with the new job details
                 );
-        
+
                 if (result.matchedCount === 0) {
                     return res.status(404).send("Job not found");
                 }
-        
+
                 res.send({ message: "Job updated successfully", updatedJob });
             } catch (error) {
                 console.error("Error updating job:", error);
                 res.status(500).send("Internal Server Error");
             }
         });
-        
+
         // Delete a job by ID
         app.delete('/job/:id', async (req, res) => {
             try {
                 const jobId = req.params.id;
-        
+
                 // Validate job ID
                 if (!ObjectId.isValid(jobId)) {
                     return res.status(400).send("Invalid job ID");
                 }
-        
+
                 // Delete the job from the database
                 const result = await jobCollection.deleteOne({ _id: new ObjectId(jobId) });
-        
+
                 if (result.deletedCount === 0) {
                     return res.status(404).send("Job not found");
                 }
-        
+
                 res.send({ message: "Job deleted successfully" });
             } catch (error) {
                 console.error("Error deleting job:", error);
@@ -197,6 +214,16 @@ async function run() {
         app.get('/users', async (req, res) => {
             try {
                 const result = await userCollection.find().toArray();
+                res.send(result);
+            } catch (error) {
+                console.error("Error fetching jobs:", error);
+                res.status(500).send("Internal Server Error");
+            }
+        });
+
+        app.get('/applied', async (req, res) => {
+            try {
+                const result = await appliedCollection.find().toArray();
                 res.send(result);
             } catch (error) {
                 console.error("Error fetching jobs:", error);
@@ -219,33 +246,6 @@ async function run() {
             } catch (error) {
                 console.error("Error fetching user:", error);
                 res.status(500).send("Internal Server Error");
-            }
-        });
-
-        app.post('/upload-profile-image', async (req, res) => {
-            const { imageUrl, email } = req.body;
-
-            if (!imageUrl || !email) {
-                return res.status(400).json({ message: 'imageUrl and email are required' });
-            }
-
-            try {
-
-
-                // Find the user by email and update the image field
-                const result = await userCollection.updateOne(
-                    { email: email }, // Filter by email
-                    { $set: { image: imageUrl } } // Update the image field
-                );
-
-                if (result.matchedCount === 0) {
-                    return res.status(404).json({ message: 'User not found' });
-                }
-
-                res.status(200).json({ message: 'Profile image updated successfully' });
-            } catch (error) {
-                console.error('Error updating profile image:', error);
-                res.status(500).json({ message: 'Internal Server Error' });
             }
         });
 
@@ -514,15 +514,47 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
-        app.get('/applied', async (req, res) => {
+
+        app.get('/applied-jobs', async (req, res) => {
             try {
-                const result = await appliedCollection.find().toArray();
-                res.send(result);
+                // Get user email - this should ideally come from authentication middleware
+                const userEmail = req.user?.email || req.query.email;
+
+                if (!userEmail) {
+                    return res.status(401).json({ error: "Unauthorized - No user identified" });
+                }
+
+                // Validate email format
+                if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
+                    return res.status(400).json({ error: "Invalid email format" });
+                }
+
+                const appliedJobs = await appliedCollection.find({
+                    email: userEmail
+                }).sort({ appliedDate: -1 }).toArray();
+
+                if (!appliedJobs.length) {
+                    return res.status(200).json({
+                        message: "No applied jobs found for this user",
+                        data: []
+                    });
+                }
+
+                res.status(200).json({
+                    count: appliedJobs.length,
+                    data: appliedJobs
+                });
+
             } catch (error) {
-                console.error("Error fetching jobs:", error);
-                res.status(500).send("Internal Server Error");
+                console.error("Error fetching applied jobs:", error);
+                res.status(500).json({
+                    error: "Internal Server Error",
+                    details: error.message
+                });
             }
         });
+
+
 
         // Backend: Save a job
         app.post('/saved', async (req, res) => {
@@ -591,6 +623,19 @@ async function run() {
                 res.status(500).send({ message: 'Internal Server Error' });
             }
         });
+        // Backend: Delete a saved job
+        app.delete('/saved/:applyId', async (req, res) => {
+            try {
+                const { applyId } = req.params;
+                const { email } = req.query; // Pass email as a query parameter
+                const query = { applyId, email };
+                const result = await savedCollection.deleteOne(query);
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: 'Internal Server Error' });
+            }
+        });
+
         app.post('/applied', async (req, res) => {
             const { applyId, email, userEmail, name, jobTitle, company, salary, deadline, status } = req.body;
 
@@ -628,7 +673,7 @@ async function run() {
                 const appliedResult = await appliedCollection.insertOne(appliedItem);
 
                 // Find the user (agency) with the email
-                const agency = await usersCollection.findOne({ email });
+                const agency = await userCollection.findOne({ email });
 
                 if (!agency) {
                     return res.status(404).json({ message: 'Agency not found' });
@@ -637,7 +682,7 @@ async function run() {
                 // Check if the user role is not ADMIN
                 if (agency.userRole !== 'ADMIN') {
                     // Find the candidate with userEmail
-                    const candidate = await usersCollection.findOne({ email: userEmail });
+                    const candidate = await userCollection.findOne({ email: userEmail });
 
                     if (!candidate) {
                         return res.status(404).json({ message: 'Candidate not found' });
@@ -655,7 +700,7 @@ async function run() {
                     };
 
                     // Update the agency's notifications array
-                    const updateResult = await usersCollection.updateOne(
+                    const updateResult = await userCollection.updateOne(
                         { email: agency.email },
                         { $push: { notifications: notification } }
                     );
@@ -669,19 +714,6 @@ async function run() {
             } catch (error) {
                 console.error('Error submitting job application:', error);
                 res.status(500).json({ message: 'Internal Server Error' });
-            }
-        });
-
-        // Backend: Delete a saved job
-        app.delete('/saved/:applyId', async (req, res) => {
-            try {
-                const { applyId } = req.params;
-                const { email } = req.query; // Pass email as a query parameter
-                const query = { applyId, email };
-                const result = await savedCollection.deleteOne(query);
-                res.send(result);
-            } catch (error) {
-                res.status(500).send({ message: 'Internal Server Error' });
             }
         });
 
@@ -1039,6 +1071,37 @@ async function run() {
             }
         });
 
+        app.post("/google", async (req, res) => {
+            const { googleId, name, email, image, userRoll } = req.body;
+
+            if (!googleId || !name || !email || !image || !userRoll) {
+                return res.status(400).json({ message: "Missing required fields" });
+            }
+
+            try {
+                await client.connect();
+                const db = client.db("your_database_name");
+                const userCollection = db.collection("users");
+
+                // Check if the user already exists in the database
+                const user = await userCollection.findOne({ googleId });
+
+                if (user) {
+                    // If the user exists, return the existing user data
+                    return res.status(200).json({ message: "User already exists", user });
+                }
+
+                // If the user doesn't exist, create a new user
+                const newUser = { googleId, name, email, image, userRoll };
+                const result = await userCollection.insertOne(newUser);
+
+                // Return the newly created user data
+                res.status(201).json({ message: "User created successfully", user: newUser });
+            } catch (error) {
+                console.error("Error saving user data:", error);
+                res.status(500).json({ message: "Internal server error", error: error.message });
+            }
+        });
 
         // Ensure you import ObjectId
 
@@ -1069,8 +1132,8 @@ async function run() {
                     return res.status(404).json({ message: 'Notification not found' });
                 }
 
-                // Update the notificationRead field to true
-                user.notifications[notificationIndex].notificationRead = true; // Use notificationRead for agencies
+                // Update the notificationread field to true
+                user.notifications[notificationIndex].notificationread = true;
 
                 // Update the user document in the database
                 await userCollection.updateOne(
@@ -1085,7 +1148,7 @@ async function run() {
             }
         });
         app.post('/messages', async (req, res) => {
-            const { name, email, messageText, userRoll } = req.body;
+            const { email, messageText, userRoll } = req.body;
 
             if (!email || !messageText || !userRoll) {
                 return res.status(400).json({ error: 'Missing required fields: email, messageText, or userRoll' });
@@ -1122,23 +1185,17 @@ async function run() {
                 const existingDoc = await chatCollection.findOne({ email });
 
                 if (existingDoc) {
-                    // If the document exists, update the name field (if it doesn't exist) and push the new message
-                    const updateQuery = {
-                        $set: { name: name }, // Update the name field if it doesn't exist
-                        $push: { messages: newMessage }, // Push the new message
-                    };
-
+                    // If the document exists, push the new message to the messages array
                     const result = await chatCollection.updateOne(
                         { email },
-                        updateQuery
+                        { $push: { messages: newMessage } }
                     );
 
                     return res.status(201).json({ message: 'Message stored successfully', data: result });
                 } else {
-                    // If the document does not exist, create it with the messages array and name field
+                    // If the document does not exist, create it with the messages array
                     const result = await chatCollection.insertOne({
                         email,
-                        name, // Include the name field for non-admin users
                         messages: [newMessage],
                     });
 
@@ -1307,10 +1364,9 @@ async function run() {
                 console.error("Failed to update payment status.");
             }
 
-            res.redirect("http://localhost:5173/success");
+            // Redirect to the job posting page with sponsored flag
+            res.redirect(`http://localhost:5173/employeedashboard/newjobpost?sponsored=true`);
         });
-
-
 
 
         app.post('/fail', async (req, res) => {
@@ -1322,13 +1378,20 @@ async function run() {
 
         app.get('/taken', async (req, res) => {
             try {
-                const result = await takenCollection.find().toArray();
+                const userEmail = req.query.userEmail;
+
+                if (!userEmail) {
+                    return res.status(400).json({ message: "User email is required" });
+                }
+
+                const result = await takenCollection.find({ userEmail }).toArray();
                 res.send(result);
             } catch (error) {
-                console.error("Error fetching jobs:", error);
+                console.error("Error fetching taken courses:", error);
                 res.status(500).send("Internal Server Error");
             }
         });
+
 
         app.get('/payments', async (req, res) => {
             try {
@@ -1336,7 +1399,6 @@ async function run() {
                 const messages = await paymentCollection.find({}).toArray();
 
                 res.status(200).json(messages);
-
             } catch (error) {
                 console.error('Error retrieving messages:', error.message);
                 console.error('Stack Trace:', error.stack);
@@ -1344,28 +1406,52 @@ async function run() {
             }
         });
 
+        app.get('/payments', async (req, res) => {
+            try {
+                // Extract the user's email from the query parameters
+                const userEmail = req.query.email;
+
+                // Define a filter object (empty if no email is provided)
+                const filter = userEmail ? { email: userEmail } : {};
+
+                // Retrieve payments from the paymentCollection based on the filter
+                const payments = await paymentCollection.find(filter).toArray();
+
+                // Send the payments as a JSON response
+                res.status(200).json(payments);
+            } catch (error) {
+                console.error('Error retrieving payments:', error.message);
+                console.error('Stack Trace:', error.stack);
+
+                // Send a structured error response
+                res.status(500).json({
+                    error: 'Failed to retrieve payments',
+                    details: error.message,
+                });
+            }
+        });
 
         app.put('/companies/:id', async (req, res) => {
             try {
                 const companyId = req.params.id;
                 const updatedCompany = req.body;
-        
+
                 // Validate the company ID
                 if (!ObjectId.isValid(companyId)) {
                     return res.status(400).send("Invalid company ID");
                 }
-        
+
                 // Update the company in the database
                 const result = await companyCollection.updateOne(
                     { _id: new ObjectId(companyId) },
                     { $set: updatedCompany }
                 );
-        
+
                 // Check if the company was found and updated
                 if (result.matchedCount === 0) {
                     return res.status(404).send("Company not found");
                 }
-        
+
                 // Send success response
                 res.send({ message: "Company updated successfully", updatedCompany });
             } catch (error) {
@@ -1373,32 +1459,31 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
-        
+
         // DELETE /companies/:id - Delete a company
         app.delete('/companies/:id', async (req, res) => {
             try {
                 const companyId = req.params.id;
-        
+
                 // Validate the company ID
                 if (!ObjectId.isValid(companyId)) {
                     return res.status(400).send("Invalid company ID");
                 }
-        
+
                 // Delete the company from the database
                 const result = await companyCollection.deleteOne({ _id: new ObjectId(companyId) });
-        
+
                 // Check if the company was found and deleted
                 if (result.deletedCount === 0) {
                     return res.status(404).send("Company not found");
                 }
-        
+
                 // Send success response
                 res.send({ message: "Company deleted successfully" });
             } catch (error) {
                 console.error("Error deleting company:", error);
                 res.status(500).send("Internal Server Error");
             }
-
         });
 
         app.post('/companies', async (req, res) => {
