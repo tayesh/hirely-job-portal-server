@@ -4,18 +4,8 @@ const cors = require('cors');
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config();
-const mongoose = require("mongoose");
 const bcrypt = require('bcrypt');
 const axios = require('axios');
-const cloudinary = require('cloudinary').v2;
-const path = require('path'); // Correctly import Cloudinary
-const fs = require('fs');
-const twilio = require('twilio');
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER; // Your Twilio phone number
-
-const twilioClient = twilio(accountSid, authToken);
 
 
 app.use(cors());
@@ -31,9 +21,6 @@ const client = new MongoClient(uri, {
         deprecationErrors: true,
     }
 });
-
-
-
 
 async function run() {
     try {
@@ -54,357 +41,74 @@ async function run() {
 
         const multer = require('multer');
 
-
-
-        async function sendOtpViaSms(phoneNumber, otp) {
-            // Validate phone number format (E.164)
-            if (!phoneNumber.startsWith('+')) {
-                throw new Error('Phone number must be in E.164 format (e.g., +1234567890)');
-            }
-
-            try {
-                const message = await twilioClient.messages.create({
-                    body: `Your verification OTP is: ${otp}. Valid for 1 minute.`,
-                    from: twilioPhoneNumber,
-                    to: "+8801637168686"
-                });
-
-                console.log('Twilio SMS sent:', message.sid);
-                return { success: true, messageSid: message.sid };
-            } catch (error) {
-                console.error('Twilio SMS Error:', {
-                    errorCode: error.code,
-                    message: error.message,
-                    phoneNumber,
-                    twilioNumber: twilioPhoneNumber
-                });
-
-                // Handle specific Twilio errors
-                if (error.code === 21211) {
-                    throw new Error('Invalid phone number format');
-                } else if (error.code === 21614) {
-                    throw new Error('This phone number is unverified. Trial accounts can only send SMS to verified numbers.');
-                } else {
-                    throw new Error('Failed to send OTP via SMS. Please try again.');
+        const upload = multer({
+            storage: multer.memoryStorage(),
+            limits: { fileSize: 5 * 1024 * 1024 },
+            fileFilter: (req, file, cb) => {
+                if (file.mimetype !== 'application/pdf') {
+                    return cb(new Error('Only PDF files are allowed!'), false);
                 }
-            }
-        }
-
-        // Multer storage for verification documents
-        const verificationStorage = multer.diskStorage({
-            destination: function (req, file, cb) {
-                cb(null, './verificationDocuments'); // Different directory for verification docs
-            },
-            filename: function (req, file, cb) {
-                const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-                cb(null, uniqueSuffix + path.extname(file.originalname));
+                cb(null, true);
             }
         });
 
-        const uploadVerificationDoc = multer({ storage: verificationStorage });
-
-        // Serve static files from verificationDocuments directory
-        app.use('/verification-documents', express.static(path.join(__dirname, './verificationDocuments')));
-
-        // Verification endpoint
-        // Get all verification submissions
-        app.post('/admin/verifications/approve', async (req, res) => {
+        app.post('/upload-cv', upload.single('cv'), async (req, res) => {
             try {
                 const { email } = req.body;
+                const cvFile = req.file;
 
-                await userCollection.updateOne(
-                    { email },
-                    {
-                        $set: {
-                            'verificationInfo.verified': true,
-                            'verificationInfo.approvedAt': new Date()
-                        }
-                    }
-                );
+                if (!email) {
+                    return res.status(400).json({ message: 'Email is required!' });
+                }
+                if (!cvFile) {
+                    return res.status(400).json({ message: 'No file uploaded.' });
+                }
 
-                res.status(200).json({ status: 'ok', message: 'Verification approved' });
-            } catch (error) {
-                res.status(500).json({ status: 'error', message: 'Failed to approve verification' });
-            }
-        });
-        app.delete('/admin/verifications', async (req, res) => {
-            try {
-                const { email } = req.body;
-
-                await userCollection.updateOne(
-                    { email },
-                    { $unset: { verificationInfo: "" } }
-                );
-
-                res.status(200).json({ status: 'ok', message: 'Verification data removed' });
-            } catch (error) {
-                res.status(500).json({ status: 'error', message: 'Failed to delete verification' });
-            }
-        });
-        app.get('/admin/verifications', async (req, res) => {
-            try {
-                // Find all users with verificationInfo
-                const usersWithVerification = await userCollection.aggregate([
-                    {
-                        $match: {
-                            "verificationInfo": { $exists: true }
-                        }
+                const cvData = {
+                    email,
+                    cvFile: {
+                        data: cvFile.buffer,
+                        contentType: cvFile.mimetype,
                     },
-                    {
-                        $project: {
-                            _id: 0, // Exclude MongoDB _id
-                            email: 1,
-                            verificationInfo: 1,
-                            createdAt: 1,
-                            // Include other user fields you might need
-                        }
-                    }
-                ]).toArray();
-
-                res.status(200).json({
-                    status: 'ok',
-                    count: usersWithVerification.length,
-                    verifications: usersWithVerification
-                });
-
-            } catch (error) {
-                console.error('Error fetching verifications:', error);
-                res.status(500).json({
-                    status: 'error',
-                    message: 'Failed to fetch verification data'
-                });
-            }
-        });
-
-        // Get verification info for a specific user
-        app.get('/admin/verifications/:email', async (req, res) => {
-            try {
-                const user = await userCollection.findOne(
-                    { email: req.params.email },
-                    { projection: { verificationInfo: 1, email: 1 } }
-                );
-
-                if (!user || !user.verificationInfo) {
-                    return res.status(404).json({
-                        status: 'error',
-                        message: 'No verification data found for this user'
-                    });
-                }
-
-                res.status(200).json({
-                    status: 'ok',
-                    verification: user.verificationInfo,
-                    userEmail: user.email
-                });
-
-            } catch (error) {
-                console.error('Error fetching user verification:', error);
-                res.status(500).json({
-                    status: 'error',
-                    message: 'Failed to fetch user verification data'
-                });
-            }
-        });
-        app.post('/verify-account', async (req, res) => {
-            const {
-                nidNumber,
-                drivingLicense,
-                passportId,
-                documentUrl,
-                password,
-                email,
-                phoneNumber
-            } = req.body;
-
-            if (!email || !password) {
-                return res.status(400).json({
-                    status: 'error',
-                    message: 'Email and password are required'
-                });
-            }
-
-            try {
-                // Find user in userCollection
-                const user = await userCollection.findOne({ email: email });
-
-                if (!user) {
-                    return res.status(404).json({
-                        status: 'error',
-                        message: 'User not found'
-                    });
-                }
-
-                // Verify password (assuming you're using bcrypt)
-                const isPasswordValid = await bcrypt.compare(password, user.password);
-
-                if (!isPasswordValid) {
-                    return res.status(401).json({
-                        status: 'error',
-                        message: 'Invalid password'
-                    });
-                }
-
-                // Create verification info object
-                const verificationInfo = {
-                    nidNumber,
-                    drivingLicense,
-                    passportId,
-                    documentUrl,
-                    verified: false,
-                    verificationDate: new Date(),
-                    phoneNumber,
-                    submittedAt: new Date()
+                    originalName: cvFile.originalname,
+                    uploadedAt: new Date(),
                 };
 
-                // Update user with verification info
-                await userCollection.updateOne(
-                    { email: email },
-                    {
-                        $set: {
-                            verificationInfo: verificationInfo
-                        }
-                    }
+                await cvCollection.updateOne(
+                    { email },
+                    { $set: cvData },
+                    { upsert: true }
                 );
 
-                res.status(200).json({
-                    status: 'ok',
-                    message: 'Verification submitted successfully'
-                });
-
-            } catch (error) {
-                console.error('Verification error:', error);
-                res.status(500).json({
-                    status: 'error',
-                    message: 'Failed to process verification'
-                });
-            }
-        });
-
-        const uploadDir = path.join(__dirname, 'files');
-
-        try {
-            if (!fs.existsSync(uploadDir)) {
-                fs.mkdirSync(uploadDir, { recursive: true });
-                console.log(`Created upload directory at: ${uploadDir}`);
-            }
-        } catch (err) {
-            console.error('Failed to create upload directory:', err);
-            process.exit(1); // Exit if we can't create the directory
-        }
-
-        const storage = multer.diskStorage({
-            destination: function (req, file, cb) {
-                cb(null, uploadDir);
-            },
-            filename: function (req, file, cb) {
-                const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-                cb(null, uniqueSuffix + path.extname(file.originalname));
-            }
-        });
-
-        const upload = multer({
-            storage: storage,
-            limits: {
-                fileSize: 10 * 1024 * 1024 // 10MB limit
-            },
-            fileFilter: (req, file, cb) => {
-                if (file.mimetype === 'application/pdf') {
-                    cb(null, true);
-                } else {
-                    cb(new Error('Only PDF files are allowed'), false);
-                }
-            }
-        });
-
-        // Serve static files
-        app.use('/files', express.static(uploadDir));
-
-        // MongoDB schema
-        const pdfDetailsSchema = new mongoose.Schema({
-            pdf: String,
-            email: { type: String, required: true, unique: true }
-        }, { collection: "PdfDetails" });
-
-        const PdfDetails = mongoose.model("PdfDetails", pdfDetailsSchema);
-
-
-        app.post('/upload-cv', upload.single('file'), async (req, res) => {
-            const file = req.file; // Uploaded file
-            const email = req.body.email;
-
-            console.log(file.filename);
-
-            if (!file || !email) {
-                return res.status(400).json({ status: 'error', message: 'File and email are required' });
-            }
-
-            try {
-                // Check if email exists in the database
-                const existingCV = await cvCollection.findOne({ email: email });
-
-                if (existingCV) {
-                    // Update existing record
-                    await cvCollection.updateOne(
-                        { email: email },
-                        { $set: { pdf: file.filename } }
-                    );
-                } else {
-                    // Create new record
-                    await cvCollection.insertOne({
-                        pdf: file.filename,
-                        email: email,
-                    });
-                }
-
-                const cvUrl = `http://localhost:5000/files/${file.filename}`;
-                console.log(cvUrl);
-
-                res.status(200).json({ status: 'ok', cvUrl: cvUrl });
+                res.status(200).json({ message: 'CV uploaded successfully!' });
             } catch (error) {
                 console.error('Error uploading CV:', error);
-                res.status(500).json({ status: 'error', message: 'Failed to upload CV' });
+                res.status(500).json({ message: 'Internal server error.' });
             }
         });
 
-        app.get('/get-cv', async (req, res) => {
-            const email = req.params.email;
-
-            try {
-                const cv = await cvCollection.find().toArray();
-
-                res.send(cv)
-            } catch (error) {
-                console.error('Error fetching CV:', error);
-                res.status(500).json({ status: 'error', message: 'Failed to fetch CV' });
-            }
-        });
         app.get('/get-cv/:email', async (req, res) => {
-            const email = req.params.email;
-
             try {
-                // Find CV by email (only one should exist per email in your system)
-                const cv = await cvCollection.findOne({ email: email });
-
-                if (cv) {
-                    res.status(200).json({
-                        status: 'ok',
-                        cvUrl: `http://localhost:5000/files/${cv.pdf}`
-                    });
-                } else {
-                    res.status(404).json({
-                        status: 'error',
-                        message: 'CV not found for this email'
-                    });
+                const { email } = req.params;
+                if (!email) {
+                    return res.status(400).json({ message: 'Email is required!' });
                 }
+
+                const cv = await cvCollection.findOne({ email });
+
+                if (!cv || !cv.cvFile) {
+                    return res.status(404).json({ message: 'No CV found for this user.' });
+                }
+
+                res.setHeader('Content-Type', cv.cvFile.contentType);
+                res.setHeader('Content-Disposition', `inline; filename="${cv.originalName}"`);
+
+                res.send(cv.cvFile.data);
             } catch (error) {
                 console.error('Error fetching CV:', error);
-                res.status(500).json({
-                    status: 'error',
-                    message: 'Failed to fetch CV'
-                });
+                res.status(500).json({ message: 'Internal server error.' });
             }
         });
-
 
 
 
@@ -418,6 +122,23 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
+
+        // Get all jobs with sponsored jobs prioritized
+        app.get('/jobs', async (req, res) => {
+            try {
+                const jobs = await jobCollection.find().toArray();
+                // Sort jobs: sponsored jobs come first
+                const sortedJobs = jobs.sort((a, b) => {
+                    if (a.sponsored === b.sponsored) return 0;
+                    return a.sponsored ? -1 : 1;
+                });
+                res.send(sortedJobs);
+            } catch (error) {
+                console.error("Error fetching jobs:", error);
+                res.status(500).send("Internal Server Error");
+            }
+        });
+
         app.get('/job/:email', async (req, res) => {
             try {
                 const email = req.params.email; // Get the email from the URL parameter
@@ -498,6 +219,16 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
+
+        app.get('/applied', async (req, res) => {
+            try {
+                const result = await appliedCollection.find().toArray();
+                res.send(result);
+            } catch (error) {
+                console.error("Error fetching jobs:", error);
+                res.status(500).send("Internal Server Error");
+            }
+        });
         app.get('/users/:id', async (req, res) => {
             try {
                 const userId = req.params.id; // Get the user ID from the request parameters
@@ -514,33 +245,6 @@ async function run() {
             } catch (error) {
                 console.error("Error fetching user:", error);
                 res.status(500).send("Internal Server Error");
-            }
-        });
-
-        app.post('/upload-profile-image', async (req, res) => {
-            const { imageUrl, email } = req.body;
-
-            if (!imageUrl || !email) {
-                return res.status(400).json({ message: 'imageUrl and email are required' });
-            }
-
-            try {
-
-
-                // Find the user by email and update the image field
-                const result = await userCollection.updateOne(
-                    { email: email }, // Filter by email
-                    { $set: { image: imageUrl } } // Update the image field
-                );
-
-                if (result.matchedCount === 0) {
-                    return res.status(404).json({ message: 'User not found' });
-                }
-
-                res.status(200).json({ message: 'Profile image updated successfully' });
-            } catch (error) {
-                console.error('Error updating profile image:', error);
-                res.status(500).json({ message: 'Internal Server Error' });
             }
         });
 
@@ -809,15 +513,47 @@ async function run() {
                 res.status(500).send("Internal Server Error");
             }
         });
-        app.get('/applied', async (req, res) => {
+
+        app.get('/applied-jobs', async (req, res) => {
             try {
-                const result = await appliedCollection.find().toArray();
-                res.send(result);
+                // Get user email - this should ideally come from authentication middleware
+                const userEmail = req.user?.email || req.query.email;
+
+                if (!userEmail) {
+                    return res.status(401).json({ error: "Unauthorized - No user identified" });
+                }
+
+                // Validate email format
+                if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
+                    return res.status(400).json({ error: "Invalid email format" });
+                }
+
+                const appliedJobs = await appliedCollection.find({
+                    email: userEmail
+                }).sort({ appliedDate: -1 }).toArray();
+
+                if (!appliedJobs.length) {
+                    return res.status(200).json({
+                        message: "No applied jobs found for this user",
+                        data: []
+                    });
+                }
+
+                res.status(200).json({
+                    count: appliedJobs.length,
+                    data: appliedJobs
+                });
+
             } catch (error) {
-                console.error("Error fetching jobs:", error);
-                res.status(500).send("Internal Server Error");
+                console.error("Error fetching applied jobs:", error);
+                res.status(500).json({
+                    error: "Internal Server Error",
+                    details: error.message
+                });
             }
         });
+
+
 
         // Backend: Save a job
         app.post('/saved', async (req, res) => {
@@ -886,6 +622,19 @@ async function run() {
                 res.status(500).send({ message: 'Internal Server Error' });
             }
         });
+        // Backend: Delete a saved job
+        app.delete('/saved/:applyId', async (req, res) => {
+            try {
+                const { applyId } = req.params;
+                const { email } = req.query; // Pass email as a query parameter
+                const query = { applyId, email };
+                const result = await savedCollection.deleteOne(query);
+                res.send(result);
+            } catch (error) {
+                res.status(500).send({ message: 'Internal Server Error' });
+            }
+        });
+
         app.post('/applied', async (req, res) => {
             const { applyId, email, userEmail, name, jobTitle, company, salary, deadline, status } = req.body;
 
@@ -923,7 +672,7 @@ async function run() {
                 const appliedResult = await appliedCollection.insertOne(appliedItem);
 
                 // Find the user (agency) with the email
-                const agency = await usersCollection.findOne({ email });
+                const agency = await userCollection.findOne({ email });
 
                 if (!agency) {
                     return res.status(404).json({ message: 'Agency not found' });
@@ -932,7 +681,7 @@ async function run() {
                 // Check if the user role is not ADMIN
                 if (agency.userRole !== 'ADMIN') {
                     // Find the candidate with userEmail
-                    const candidate = await usersCollection.findOne({ email: userEmail });
+                    const candidate = await userCollection.findOne({ email: userEmail });
 
                     if (!candidate) {
                         return res.status(404).json({ message: 'Candidate not found' });
@@ -950,7 +699,7 @@ async function run() {
                     };
 
                     // Update the agency's notifications array
-                    const updateResult = await usersCollection.updateOne(
+                    const updateResult = await userCollection.updateOne(
                         { email: agency.email },
                         { $push: { notifications: notification } }
                     );
@@ -964,19 +713,6 @@ async function run() {
             } catch (error) {
                 console.error('Error submitting job application:', error);
                 res.status(500).json({ message: 'Internal Server Error' });
-            }
-        });
-
-        // Backend: Delete a saved job
-        app.delete('/saved/:applyId', async (req, res) => {
-            try {
-                const { applyId } = req.params;
-                const { email } = req.query; // Pass email as a query parameter
-                const query = { applyId, email };
-                const result = await savedCollection.deleteOne(query);
-                res.send(result);
-            } catch (error) {
-                res.status(500).send({ message: 'Internal Server Error' });
             }
         });
 
@@ -1165,31 +901,17 @@ async function run() {
         app.post('/resend-otp', async (req, res) => {
             const { email } = req.body;
 
-            // Find user by email
-            const user = await userCollection.findOne({ email });
-            if (!user) {
-                return res.status(404).json({ message: 'User not found.' });
-            }
-
             // Generate a new 4-digit OTP
             const otp = Math.floor(1000 + Math.random() * 9000).toString();
-            const otpExpiry = new Date(Date.now() + 60000);
+            const otpExpiry = new Date(Date.now() + 60000); // OTP expires in 1 minute
 
-            try {
-                // Send new OTP via Twilio SMS
-                await sendOtpViaSms(user.phoneNumber, otp);
+            // Update the user's OTP and expiry time
+            await userCollection.updateOne(
+                { email },
+                { $set: { otp, otpExpiry } }
+            );
 
-                // Update the user's OTP and expiry time
-                await userCollection.updateOne(
-                    { email },
-                    { $set: { otp, otpExpiry } }
-                );
-
-                res.status(200).json({ message: 'New OTP sent successfully!' });
-            } catch (error) {
-                console.error('Error resending OTP:', error);
-                res.status(500).json({ message: 'Failed to resend OTP. Please try again.' });
-            }
+            res.status(200).json({ message: 'New OTP sent successfully!' });
         });
         app.post('/verify-otp', async (req, res) => {
             const { otp, email } = req.body;
@@ -1321,34 +1043,26 @@ async function run() {
                     });
                 } else {
                     // If OTPverified is false or missing, generate a new OTP
-                    const otp = Math.floor(1000 + Math.random() * 9000).toString();
-                    const otpExpiry = new Date(Date.now() + 120000);
+                    const otp = Math.floor(1000 + Math.random() * 9000).toString(); // Generate a 4-digit OTP
+                    const otpExpiry = new Date(Date.now() + 60000); // OTP expires in 1 minute
 
-                    try {
-                        // Send new OTP via Twilio SMS
-                        // await sendOtpViaSms(user.phoneNumber, otp);
+                    // Update the user's record with the new OTP and expiry time
+                    await userCollection.updateOne(
+                        { _id: user._id },
+                        { $set: { otp, otpExpiry, OTPverified: false } }
+                    );
 
-                        // Update the user's record with the new OTP and expiry time
-                        await userCollection.updateOne(
-                            { _id: user._id },
-                            { $set: { otp, otpExpiry, OTPverified: false } }
-                        );
-
-                        // Return a response indicating OTP verification is required
-                        return res.status(200).json({
-                            message: 'OTP verification required. A new OTP has been sent.',
-                            user: {
-                                name: user.name,
-                                email: user.email,
-                                phoneNumber: user.phoneNumber,
-                                userRoll: user.userRoll,
-                                OTPverified: false,
-                            },
-                        });
-                    } catch (error) {
-                        console.error('Error sending OTP during login:', error);
-                        return res.status(500).json({ message: 'Failed to send OTP. Please try again.' });
-                    }
+                    // Return a response indicating OTP verification is required
+                    return res.status(200).json({
+                        message: 'OTP verification required. A new OTP has been sent.',
+                        user: {
+                            name: user.name,
+                            email: user.email,
+                            phoneNumber: user.phoneNumber,
+                            userRoll: user.userRoll,
+                            OTPverified: false, // Indicate that OTP verification is pending
+                        },
+                    });
                 }
             } catch (error) {
                 console.error('Error during login:', error);
@@ -1356,6 +1070,37 @@ async function run() {
             }
         });
 
+        app.post("/google", async (req, res) => {
+            const { googleId, name, email, image, userRoll } = req.body;
+
+            if (!googleId || !name || !email || !image || !userRoll) {
+                return res.status(400).json({ message: "Missing required fields" });
+            }
+
+            try {
+                await client.connect();
+                const db = client.db("your_database_name");
+                const userCollection = db.collection("users");
+
+                // Check if the user already exists in the database
+                const user = await userCollection.findOne({ googleId });
+
+                if (user) {
+                    // If the user exists, return the existing user data
+                    return res.status(200).json({ message: "User already exists", user });
+                }
+
+                // If the user doesn't exist, create a new user
+                const newUser = { googleId, name, email, image, userRoll };
+                const result = await userCollection.insertOne(newUser);
+
+                // Return the newly created user data
+                res.status(201).json({ message: "User created successfully", user: newUser });
+            } catch (error) {
+                console.error("Error saving user data:", error);
+                res.status(500).json({ message: "Internal server error", error: error.message });
+            }
+        });
 
         // Ensure you import ObjectId
 
@@ -1386,8 +1131,8 @@ async function run() {
                     return res.status(404).json({ message: 'Notification not found' });
                 }
 
-                // Update the notificationRead field to true
-                user.notifications[notificationIndex].notificationRead = true; // Use notificationRead for agencies
+                // Update the notificationread field to true
+                user.notifications[notificationIndex].notificationread = true;
 
                 // Update the user document in the database
                 await userCollection.updateOne(
@@ -1402,7 +1147,7 @@ async function run() {
             }
         });
         app.post('/messages', async (req, res) => {
-            const { name, email, messageText, userRoll } = req.body;
+            const { email, messageText, userRoll } = req.body;
 
             if (!email || !messageText || !userRoll) {
                 return res.status(400).json({ error: 'Missing required fields: email, messageText, or userRoll' });
@@ -1439,23 +1184,17 @@ async function run() {
                 const existingDoc = await chatCollection.findOne({ email });
 
                 if (existingDoc) {
-                    // If the document exists, update the name field (if it doesn't exist) and push the new message
-                    const updateQuery = {
-                        $set: { name: name }, // Update the name field if it doesn't exist
-                        $push: { messages: newMessage }, // Push the new message
-                    };
-
+                    // If the document exists, push the new message to the messages array
                     const result = await chatCollection.updateOne(
                         { email },
-                        updateQuery
+                        { $push: { messages: newMessage } }
                     );
 
                     return res.status(201).json({ message: 'Message stored successfully', data: result });
                 } else {
-                    // If the document does not exist, create it with the messages array and name field
+                    // If the document does not exist, create it with the messages array
                     const result = await chatCollection.insertOne({
                         email,
-                        name, // Include the name field for non-admin users
                         messages: [newMessage],
                     });
 
@@ -1624,10 +1363,9 @@ async function run() {
                 console.error("Failed to update payment status.");
             }
 
-            res.redirect("http://localhost:5173/success");
+            // Redirect to the job posting page with sponsored flag
+            res.redirect(`http://localhost:5173/employeedashboard/newjobpost?sponsored=true`);
         });
-
-
 
 
         app.post('/fail', async (req, res) => {
@@ -1639,13 +1377,20 @@ async function run() {
 
         app.get('/taken', async (req, res) => {
             try {
-                const result = await takenCollection.find().toArray();
+                const userEmail = req.query.userEmail;
+
+                if (!userEmail) {
+                    return res.status(400).json({ message: "User email is required" });
+                }
+
+                const result = await takenCollection.find({ userEmail }).toArray();
                 res.send(result);
             } catch (error) {
-                console.error("Error fetching jobs:", error);
+                console.error("Error fetching taken courses:", error);
                 res.status(500).send("Internal Server Error");
             }
         });
+
 
         app.get('/payments', async (req, res) => {
             try {
@@ -1653,7 +1398,6 @@ async function run() {
                 const messages = await paymentCollection.find({}).toArray();
 
                 res.status(200).json(messages);
-
             } catch (error) {
                 console.error('Error retrieving messages:', error.message);
                 console.error('Stack Trace:', error.stack);
@@ -1661,6 +1405,30 @@ async function run() {
             }
         });
 
+        app.get('/payments', async (req, res) => {
+            try {
+                // Extract the user's email from the query parameters
+                const userEmail = req.query.email;
+
+                // Define a filter object (empty if no email is provided)
+                const filter = userEmail ? { email: userEmail } : {};
+
+                // Retrieve payments from the paymentCollection based on the filter
+                const payments = await paymentCollection.find(filter).toArray();
+
+                // Send the payments as a JSON response
+                res.status(200).json(payments);
+            } catch (error) {
+                console.error('Error retrieving payments:', error.message);
+                console.error('Stack Trace:', error.stack);
+
+                // Send a structured error response
+                res.status(500).json({
+                    error: 'Failed to retrieve payments',
+                    details: error.message,
+                });
+            }
+        });
 
         app.put('/companies/:id', async (req, res) => {
             try {
@@ -1715,7 +1483,6 @@ async function run() {
                 console.error("Error deleting company:", error);
                 res.status(500).send("Internal Server Error");
             }
-
         });
 
         app.post('/companies', async (req, res) => {
